@@ -200,6 +200,59 @@ function validateSlug(slug) {
   return slug
 }
 
+/**
+ * Validate workspace path for template substitution.
+ * Prevents XML/systemd injection in daemon configs.
+ */
+function validateWorkspacePath(workspacePath) {
+  // Must be absolute
+  if (!path.isAbsolute(workspacePath)) {
+    throw new Error('OPENCLAW_WORKSPACE must be an absolute path')
+  }
+  // Must exist
+  if (!existsSync(workspacePath)) {
+    throw new Error(`OPENCLAW_WORKSPACE does not exist: ${workspacePath}`)
+  }
+  // No newlines (breaks XML/systemd syntax)
+  if (/[\r\n]/.test(workspacePath)) {
+    throw new Error('OPENCLAW_WORKSPACE contains newlines')
+  }
+  // No XML special chars (for plist safety)
+  if (/[<>&"']/.test(workspacePath)) {
+    throw new Error('OPENCLAW_WORKSPACE contains XML special characters')
+  }
+  return workspacePath
+}
+
+/**
+ * Validate node binary path for template substitution.
+ * Prevents injection in daemon configs.
+ */
+function validateNodePath(nodePath) {
+  if (!path.isAbsolute(nodePath)) {
+    throw new Error('Node binary path must be absolute')
+  }
+  if (!existsSync(nodePath)) {
+    throw new Error(`Node binary not found: ${nodePath}`)
+  }
+  if (/[\r\n<>&"']/.test(nodePath)) {
+    throw new Error('Node binary path contains invalid characters')
+  }
+  return nodePath
+}
+
+/**
+ * Escape XML entities for safe plist substitution.
+ */
+function xmlEscape(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
 /** Convert a human name to a lowercase-hyphenated slug. */
 function toSlug(name) {
   const slug = name
@@ -281,16 +334,23 @@ async function offerLaunchAgent(ask, autoYes = false) {
   }
 
   try {
-    const nodeBin = process.execPath
+    // Validate workspace and node paths before template substitution
+    const validatedWorkspace = validateWorkspacePath(workspace)
+    const validatedNodeBin = validateNodePath(process.execPath)
+    
+    // Apply XML escaping for plist safety
+    const escapedWorkspace = xmlEscape(validatedWorkspace)
+    const escapedNodeBin = xmlEscape(validatedNodeBin)
+    
     const plistContent = readFileSync(tmplPath, 'utf8')
-      .replace(/\{\{workspace\}\}/g, workspace)
-      .replace(/<string>\/usr\/local\/bin\/node<\/string>/, `<string>${nodeBin}</string>`)
+      .replace(/\{\{workspace\}\}/g, escapedWorkspace)
+      .replace(/<string>\/usr\/local\/bin\/node<\/string>/, `<string>${escapedNodeBin}</string>`)
 
     writeFileSync(plistDest, plistContent, 'utf8')
     console.log(`  ${c.green}created${c.reset} ${plistDest}`)
 
     // Ensure logs dir exists
-    const logsDir = path.join(workspace, 'logs')
+    const logsDir = path.join(validatedWorkspace, 'logs')
     if (!existsSync(logsDir)) {
       mkdirSync(logsDir, { recursive: true })
       console.log(`  ${c.green}created${c.reset} logs/`)
@@ -299,11 +359,11 @@ async function offerLaunchAgent(ask, autoYes = false) {
     // Load the agent
     const { execSync } = await import('node:child_process')
     try {
-      execSync(`launchctl load "${plistDest}"`, { stdio: 'pipe' })
+      execSync(`/bin/launchctl load "${plistDest}"`, { stdio: 'pipe' })
       console.log(`  ${c.green}loaded${c.reset}  com.taskflow.sync LaunchAgent (sync every 60s)`)
     } catch {
       console.log(`  ${c.yellow}!${c.reset} Could not load LaunchAgent automatically. Run manually:`)
-      console.log(`    launchctl load "${plistDest}"`)
+      console.log(`    /bin/launchctl load "${plistDest}"`)
     }
   } catch (e) {
     console.log(`  ${c.yellow}!${c.reset} LaunchAgent install failed: ${e.message}`)
@@ -320,15 +380,19 @@ async function cmdInstallDaemon() {
   const os = process.platform
   const { execSync } = await import('node:child_process')
 
+  // Validate workspace and node paths before template substitution
+  const validatedWorkspace = validateWorkspacePath(workspace)
+  const validatedNodeBin = validateNodePath(process.execPath)
+
   console.log()
   console.log(`${c.bold}${c.cyan}  TaskFlow — Install Sync Daemon${c.reset}`)
   console.log(`${c.gray}  ${'─'.repeat(52)}${c.reset}`)
   console.log(`  Platform:  ${c.bold}${os}${c.reset}`)
-  console.log(`  Workspace: ${c.bold}${workspace}${c.reset}`)
+  console.log(`  Workspace: ${c.bold}${validatedWorkspace}${c.reset}`)
   console.log()
 
   // Ensure logs dir exists
-  const logsDir = path.join(workspace, 'logs')
+  const logsDir = path.join(validatedWorkspace, 'logs')
   if (!existsSync(logsDir)) {
     mkdirSync(logsDir, { recursive: true })
     console.log(`  ${c.green}created${c.reset} logs/`)
@@ -347,29 +411,32 @@ async function cmdInstallDaemon() {
     if (existsSync(plistDest)) {
       console.log(`  ${c.green}✓${c.reset} LaunchAgent already installed: ${plistDest}`)
       console.log(`  ${c.dim}To reinstall, unload and remove it first:${c.reset}`)
-      console.log(`    launchctl unload "${plistDest}" && rm "${plistDest}"`)
+      console.log(`    /bin/launchctl unload "${plistDest}" && rm "${plistDest}"`)
       return
     }
 
-    const nodeBin = process.execPath
+    // Apply XML escaping for plist safety
+    const escapedWorkspace = xmlEscape(validatedWorkspace)
+    const escapedNodeBin = xmlEscape(validatedNodeBin)
+    
     const plistContent = readFileSync(tmplPath, 'utf8')
-      .replace(/\{\{workspace\}\}/g, workspace)
-      .replace(/\{\{node\}\}/g, nodeBin)
+      .replace(/\{\{workspace\}\}/g, escapedWorkspace)
+      .replace(/\{\{node\}\}/g, escapedNodeBin)
 
     writeFileSync(plistDest, plistContent, 'utf8')
     console.log(`  ${c.green}created${c.reset}  ${plistDest}`)
 
     try {
-      execSync(`launchctl load "${plistDest}"`, { stdio: 'pipe' })
+      execSync(`/bin/launchctl load "${plistDest}"`, { stdio: 'pipe' })
       console.log(`  ${c.green}loaded${c.reset}   com.taskflow.sync (syncs every 60s)`)
     } catch (e) {
       console.log(`  ${c.yellow}!${c.reset} Could not load automatically. Run:`)
-      console.log(`    launchctl load "${plistDest}"`)
+      console.log(`    /bin/launchctl load "${plistDest}"`)
     }
 
     console.log()
-    console.log(`  ${c.bold}Verify:${c.reset}  launchctl list | grep taskflow`)
-    console.log(`  ${c.bold}Logs:${c.reset}    ${workspace}/logs/taskflow-sync.{stdout,stderr}.log`)
+    console.log(`  ${c.bold}Verify:${c.reset}  /bin/launchctl list | grep taskflow`)
+    console.log(`  ${c.bold}Logs:${c.reset}    ${validatedWorkspace}/logs/taskflow-sync.{stdout,stderr}.log`)
 
   } else if (os === 'linux') {
     // ── Linux: systemd user timer ────────────────────────────────────────
@@ -392,12 +459,11 @@ async function cmdInstallDaemon() {
       console.log(`  ${c.green}created${c.reset} ${systemdDir}`)
     }
 
-    const nodeBin = process.execPath
-
+    // Template substitution with validated values (systemd doesn't need XML escaping, but validation prevents injection)
     for (const [src, dest] of [[svcSrc, svcDest], [timerSrc, timerDest]]) {
       const content = readFileSync(src, 'utf8')
-        .replace(/\{\{workspace\}\}/g, workspace)
-        .replace(/\{\{node\}\}/g, nodeBin)
+        .replace(/\{\{workspace\}\}/g, validatedWorkspace)
+        .replace(/\{\{node\}\}/g, validatedNodeBin)
       writeFileSync(dest, content, 'utf8')
       console.log(`  ${c.green}created${c.reset}  ${dest}`)
     }
@@ -422,14 +488,14 @@ async function cmdInstallDaemon() {
     console.log()
     console.log(`  ${c.bold}Verify:${c.reset}  systemctl --user status taskflow-sync.timer`)
     console.log(`  ${c.bold}Logs:${c.reset}    journalctl --user -u taskflow-sync.service`)
-    console.log(`           ${workspace}/logs/taskflow-sync.{stdout,stderr}.log`)
+    console.log(`           ${validatedWorkspace}/logs/taskflow-sync.{stdout,stderr}.log`)
 
   } else {
     console.error(`${c.red}✗${c.reset} Platform '${os}' is not supported by install-daemon.`)
     console.error(`  Supported platforms: darwin (macOS), linux`)
     console.error()
     console.error(`  Manual cron fallback:`)
-    console.error(`    * * * * * OPENCLAW_WORKSPACE=${workspace} ${process.execPath} ${path.join(workspace, 'taskflow', 'scripts', 'task-sync.mjs')} files-to-db`)
+    console.error(`    * * * * * OPENCLAW_WORKSPACE=${validatedWorkspace} ${validatedNodeBin} ${path.join(validatedWorkspace, 'taskflow', 'scripts', 'task-sync.mjs')} files-to-db`)
     process.exit(1)
   }
 
