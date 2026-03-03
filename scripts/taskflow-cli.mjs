@@ -793,8 +793,34 @@ function parseAddArgs(rawArgs) {
   return out
 }
 
+/**
+ * Sanitize task title to reject common prompt injection patterns.
+ * Task titles are untrusted input that agents may consume.
+ */
 function escapeTaskTitle(title) {
-  return title.replace(/\s+/g, ' ').trim()
+  const sanitized = title.replace(/\s+/g, ' ').trim()
+  
+  // Reject common prompt injection patterns
+  const DANGEROUS_PATTERNS = [
+    /ignore\s+(all\s+)?previous(\s+instructions?)?/i,
+    /you\s+are\s+now/i,
+    /forget\s+(everything|all|previous)/i,
+    /system\s*:/i,
+    /\[system\]/i,
+    /output\s+the\s+contents\s+of/i,
+    /execute\s+this/i,
+    /run\s+this\s+command/i,
+    /sudo\s+/i,
+    /rm\s+-rf/i,
+  ]
+  
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(sanitized)) {
+      throw new Error(`Task title contains suspicious instruction pattern: "${sanitized.slice(0, 50)}..."`)
+    }
+  }
+  
+  return sanitized
 }
 
 function escapeRegex(value) {
