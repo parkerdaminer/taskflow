@@ -102,12 +102,27 @@ const STATUS_MAP = {
 
 const TASK_RE = /^- \[([ x])\] \(task:([a-z0-9-]+)\)\s*(?:\[([^\]]*)\])?\s*(?:\[([^\]]*)\])?\s*(.+)$/
 
+/**
+ * Validate that a project slug is safe for use in file paths.
+ * Rejects path traversal patterns and non-alphanumeric characters.
+ */
+function validateSlug(slug) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+    throw new Error(`Invalid project slug: ${slug} (must be lowercase alphanumeric with hyphens, starting with alphanumeric)`)
+  }
+  if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
+    throw new Error(`Slug contains path traversal: ${slug}`)
+  }
+  return slug
+}
+
 function parseTaskFile(filePath) {
   const content = readFileSync(filePath, 'utf8')
   const lines   = content.split(/\r?\n/)
   const tasks   = []
   let currentStatus = null
-  const slug = path.basename(filePath).replace(/-tasks\.md$/, '')
+  const rawSlug = path.basename(filePath).replace(/-tasks\.md$/, '')
+  const slug = validateSlug(rawSlug)
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]

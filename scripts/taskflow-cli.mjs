@@ -186,15 +186,32 @@ async function cmdInit() {
 
 // --- setup helpers -----------------------------------------------------------
 
+/**
+ * Validate that a project slug is safe for use in file paths.
+ * Rejects path traversal patterns and non-alphanumeric characters.
+ */
+function validateSlug(slug) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+    throw new Error(`Invalid project slug: ${slug} (must be lowercase alphanumeric with hyphens, starting with alphanumeric)`)
+  }
+  if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
+    throw new Error(`Slug contains path traversal: ${slug}`)
+  }
+  return slug
+}
+
 /** Convert a human name to a lowercase-hyphenated slug. */
 function toSlug(name) {
-  return name
+  const slug = name
     .toLowerCase()
     .trim()
     .replace(/[^\w\s-]/g, '')
     .replace(/[\s_]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
+  
+  // Validate the generated slug
+  return validateSlug(slug)
 }
 
 /** Print a summary of what was created and what to do next. */
@@ -735,7 +752,16 @@ async function cmdAdd(rawArgs) {
     process.exit(1)
   }
 
-  const project = args.project.trim().toLowerCase()
+  // Validate project slug to prevent path traversal
+  const rawProject = args.project.trim().toLowerCase()
+  let project
+  try {
+    project = validateSlug(rawProject)
+  } catch (e) {
+    console.error(`${c.red}✗${c.reset} ${e.message}`)
+    process.exit(1)
+  }
+  
   const title = escapeTaskTitle(args.title)
   const status = args.status.toLowerCase()
   const priority = args.priority.toUpperCase()
