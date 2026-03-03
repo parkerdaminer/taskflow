@@ -53,24 +53,33 @@ function acquireLock() {
   const owner = `task-sync:${mode}`
   const until = new Date(Date.now() + 60_000).toISOString() // 60s TTL
 
-  // Ensure the singleton row exists
-  db.exec(`INSERT OR IGNORE INTO sync_state (id, lock_owner, lock_until) VALUES (1, NULL, NULL)`)
+  // Wrap lock acquisition in BEGIN IMMEDIATE to prevent race conditions
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    // Ensure the singleton row exists
+    db.exec(`INSERT OR IGNORE INTO sync_state (id, lock_owner, lock_until) VALUES (1, NULL, NULL)`)
 
-  // Single atomic UPDATE: succeeds only when no valid lock is held
-  const result = db.prepare(`
-    UPDATE sync_state
-    SET lock_owner = ?, lock_until = ?
-    WHERE id = 1
-      AND (lock_owner IS NULL OR lock_until < datetime('now'))
-  `).run(owner, until)
+    // Single atomic UPDATE: succeeds only when no valid lock is held
+    const result = db.prepare(`
+      UPDATE sync_state
+      SET lock_owner = ?, lock_until = ?
+      WHERE id = 1
+        AND (lock_owner IS NULL OR lock_until < datetime('now'))
+    `).run(owner, until)
 
-  if (result.changes === 0) {
-    const row = db.prepare('SELECT lock_owner, lock_until FROM sync_state WHERE id = 1').get()
-    console.error(`Sync locked by ${row?.lock_owner} until ${row?.lock_until}`)
-    process.exit(1)
+    db.exec('COMMIT')
+
+    if (result.changes === 0) {
+      const row = db.prepare('SELECT lock_owner, lock_until FROM sync_state WHERE id = 1').get()
+      console.error(`Sync locked by ${row?.lock_owner} until ${row?.lock_until}`)
+      process.exit(1)
+    }
+
+    lockAcquired = true
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
   }
-
-  lockAcquired = true
 }
 
 function releaseLock(result) {
