@@ -60,6 +60,20 @@ function writeConfig(updates) {
 
 // ── Parse PROJECTS.md ──────────────────────────────────────────────────────
 
+/**
+ * Validate that a project slug is safe for use in file paths.
+ * Rejects path traversal patterns and non-alphanumeric characters.
+ */
+function validateSlug(slug) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+    throw new Error(`Invalid project slug: ${slug} (must be lowercase alphanumeric with hyphens, starting with alphanumeric)`)
+  }
+  if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
+    throw new Error(`Slug contains path traversal: ${slug}`)
+  }
+  return slug
+}
+
 function parseProjects() {
   if (!existsSync(projectsFile)) return {}
   const lines = readFileSync(projectsFile, 'utf8').split('\n')
@@ -69,8 +83,14 @@ function parseProjects() {
   for (const line of lines) {
     const h2 = line.match(/^## (.+)/)
     if (h2) {
-      currentSlug = h2[1].trim()
-      projects[currentSlug] = { name: currentSlug, desc: '' }
+      const rawSlug = h2[1].trim()
+      try {
+        currentSlug = validateSlug(rawSlug)
+        projects[currentSlug] = { name: currentSlug, desc: '' }
+      } catch (e) {
+        console.warn(`[apple-notes-export] Skipping invalid project slug: ${rawSlug} (${e.message})`)
+        currentSlug = null
+      }
       continue
     }
     if (!currentSlug) continue
@@ -174,11 +194,13 @@ function generateHtml(tasks, title) {
 
 /**
  * Escape a string for embedding inside an AppleScript string literal.
+ * Protects against shell injection by escaping backslashes, quotes, and ampersands.
  */
 function asEscape(str) {
-  // In AppleScript, backslash and double-quote need to be escaped for shell
-  // We'll write HTML to a temp file and read it in AppleScript to avoid quoting issues.
   return str
+    .replace(/\\/g, '\\\\')     // Backslash must be escaped first
+    .replace(/"/g, '\\"')       // Double-quote
+    .replace(/'/g, "'\"'\"'")   // Single-quote (exit string, quote it, re-enter)
 }
 
 const TMP_HTML = '/tmp/taskflow-apple-notes.html'
@@ -212,13 +234,21 @@ end tell
  * Update an existing note by Core Data ID.
  */
 function updateNote(noteId, title, html) {
+  // Validate title length (Apple Notes limit + safety margin)
+  if (title.length > 200) {
+    throw new Error(`Note title too long (max 200 chars): ${title.length}`)
+  }
+
   writeFileSync(TMP_HTML, html, 'utf8')
+  const safeNoteId = asEscape(noteId)
+  const safeTitle = asEscape(title)
+  
   const script = `
 set noteBody to (do shell script "cat /tmp/taskflow-apple-notes.html")
 tell application "Notes"
   try
-    set targetNote to note id "${noteId}"
-    set name of targetNote to "${title.replace(/"/g, '\\"')}"
+    set targetNote to note id "${safeNoteId}"
+    set name of targetNote to "${safeTitle}"
     set body of targetNote to noteBody
     return (id of targetNote) as text
   on error errMsg
@@ -237,7 +267,15 @@ end tell
  * Returns the new note's Core Data ID.
  */
 function createNote(title, html, folder) {
+  // Validate title length (Apple Notes limit + safety margin)
+  if (title.length > 200) {
+    throw new Error(`Note title too long (max 200 chars): ${title.length}`)
+  }
+
   writeFileSync(TMP_HTML, html, 'utf8')
+  const safeTitle = asEscape(title)
+  const safeFolder = asEscape(folder)
+  
   const script = `
 set noteBody to (do shell script "cat /tmp/taskflow-apple-notes.html")
 tell application "Notes"
@@ -245,14 +283,14 @@ tell application "Notes"
   delay 0.5
   set targetFolder to missing value
   try
-    set targetFolder to folder "${folder.replace(/"/g, '\\"')}"
+    set targetFolder to folder "${safeFolder}"
   on error
     -- folder not found, use default account
   end try
   if targetFolder is missing value then
-    set newNote to make new note with properties {name:"${title.replace(/"/g, '\\"')}", body:noteBody}
+    set newNote to make new note with properties {name:"${safeTitle}", body:noteBody}
   else
-    set newNote to make new note at targetFolder with properties {name:"${title.replace(/"/g, '\\"')}", body:noteBody}
+    set newNote to make new note at targetFolder with properties {name:"${safeTitle}", body:noteBody}
   end if
   return (id of newNote) as text
 end tell
